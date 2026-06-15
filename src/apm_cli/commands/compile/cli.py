@@ -349,8 +349,9 @@ def _handle_global_flag(dry_run: bool) -> int:
     source_root = get_apm_dir(InstallScope.USER)
     apm_modules = source_root / "apm_modules"
     if not apm_modules.is_dir():
+        display_path = _display_user_path(apm_modules)
         _rich_error(
-            f"User-scope apm_modules not found: {apm_modules}. "
+            f"User-scope apm_modules not found: {display_path}. "
             "Run 'apm install -g <package>' to install packages globally."
         )
         return 1
@@ -407,6 +408,15 @@ def _handle_global_flag(dry_run: bool) -> int:
             _rich_info("No user-scope root context files changed.", symbol="info")
 
     return 1 if has_error else 0
+
+
+def _display_user_path(path: Path) -> str:
+    """Render paths under HOME with a stable tilde prefix for CLI output."""
+    try:
+        rel = path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return str(path)
+    return f"~/{rel.as_posix()}"
 
 
 def _validate_project(logger: CommandLogger, dry_run: bool, source_root: Path) -> None:

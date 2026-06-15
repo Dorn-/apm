@@ -106,9 +106,9 @@ class TestCompileUserRootContextsAfterInstall:
         ):
             _compile_user_root_contexts_after_install(ctx)
 
-        # Logger should have been called with verbose_detail
-        mock_logger.verbose_detail.assert_called_once()
-        call_str = str(mock_logger.verbose_detail.call_args)
+        # Logger should have been called with a header plus one line per target.
+        assert mock_logger.verbose_detail.call_count == 3
+        call_str = str(mock_logger.verbose_detail.call_args_list)
         assert "claude" in call_str
         assert "CLAUDE.md" in call_str
         assert "vscode" in call_str

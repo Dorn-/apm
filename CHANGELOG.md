@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `apm install -g` now auto-compiles global instructions into user-scope root
-  context files such as `~/.claude/CLAUDE.md`; re-run manually with
+- `apm install -g` now makes global instructions immediately available to
+  supported AI tools by compiling user-scope root context files such as
+  `~/.claude/CLAUDE.md`; re-run manually with
   `apm compile --global`. (#1632)
 
 ### Removed

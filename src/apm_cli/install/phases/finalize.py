@@ -33,12 +33,14 @@ def _compile_user_root_contexts_after_install(ctx: InstallContext) -> None:
     written = [r for r in results if r.status == "written"]
     errors = [r for r in results if r.status.startswith("error:")]
     if written and ctx.logger:
-        target_paths = ", ".join(f"{r.target}: {r.path}" for r in written)
-        ctx.logger.verbose_detail(f"Compiled user-scope root contexts: {target_paths}")
+        ctx.logger.verbose_detail("Compiled user-scope root contexts:")
+        for result in written:
+            ctx.logger.verbose_detail(f"  {result.target}: {result.path}")
     for error in errors:
         ctx.diagnostics.warn(
             f"Could not compile user-scope root context for {error.target}: "
-            f"{error.status[6:]}. Run 'apm compile -g' for details."
+            f"{error.status[6:]}. Run 'apm compile -g' for details, "
+            "or re-run install with -v for verbose paths."
         )
 
 

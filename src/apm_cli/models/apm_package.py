@@ -17,6 +17,7 @@ from ..core.target_detection import parse_target_field
 from .dependency import (
     DependencyReference,
     GitReferenceType,
+    LSPDependency,
     MCPDependency,
     RemoteRef,
     ResolvedReference,
@@ -36,6 +37,7 @@ __all__ = [  # noqa: RUF022
     # Backward-compatible re-exports from .dependency
     "DependencyReference",
     "GitReferenceType",
+    "LSPDependency",
     "MCPDependency",
     "RemoteRef",
     "ResolvedReference",
@@ -246,8 +248,15 @@ class APMPackage:
     # Top-level ``registries:`` block per docs/proposals/registry-api.md §3.1.
     # Maps registry name -> base URL. None when no ``registries:`` block is present.
     registries: dict[str, str] | None = None
-    # Value of ``registries.default:`` — routes unscoped deps to this registry.
+    # Value of ``registries.default:`` -- routes unscoped deps to this registry.
     default_registry: str | None = None
+
+    # Top-level ``allowExecutables:`` block -- per-package approval for
+    # executable primitives (hooks, MCP servers, bin/ executables).
+    # Mirrors npm v12's ``allowScripts`` in ``package.json``.
+    # Keys are package handles with pinned version; values map exec type
+    # to boolean (e.g. ``{"owner/repo#v1.0": {"hooks": true}}``).
+    allow_executables: dict[str, dict[str, bool]] | None = None
 
     @classmethod
     def _parse_dependency_dict(cls, raw_deps: dict, label: str = "") -> dict:
@@ -289,6 +298,19 @@ class APMPackage:
                         except ValueError as e:
                             raise ValueError(f"Invalid {label}MCP dependency: {e}")  # noqa: B904
                 parsed[dep_type] = parsed_mcp
+            elif dep_type == "lsp":
+                from .dependency.lsp import LSPDependency as LSPDep
+
+                parsed_lsp: list = []
+                for dep in dep_list:
+                    if isinstance(dep, str):
+                        parsed_lsp.append(LSPDep.from_string(dep))
+                    elif isinstance(dep, dict):
+                        try:
+                            parsed_lsp.append(LSPDep.from_dict(dep))
+                        except ValueError as e:
+                            raise ValueError(f"Invalid {label}LSP dependency: {e}")  # noqa: B904
+                parsed[dep_type] = parsed_lsp
             else:
                 parsed[dep_type] = [dep for dep in dep_list if isinstance(dep, (str, dict))]
         return parsed
@@ -397,6 +419,11 @@ class APMPackage:
             for dep_list in _iter_apm_dependency_lists(dependencies, dev_dependencies):
                 _route_unscoped_to_default_registry(dep_list, default_registry)
 
+        # Parse allowExecutables block (npm v12-style approval gate).
+        from ..security.executables import parse_allow_executables
+
+        allow_executables = parse_allow_executables(data)
+
         # Parse package content type
         pkg_type = None
         if "type" in data and data["type"] is not None:
@@ -466,6 +493,7 @@ class APMPackage:
             includes=includes,
             registries=registries,
             default_registry=default_registry,
+            allow_executables=allow_executables,
         )
         _apm_yml_cache[cache_key] = result
         return result
@@ -503,6 +531,24 @@ class APMPackage:
             dep
             for dep in (self.dev_dependencies.get("mcp") or [])
             if isinstance(dep, MCPDependency)
+        ]
+
+    def get_lsp_dependencies(self) -> list["LSPDependency"]:
+        """Get list of LSP dependencies."""
+        if not self.dependencies or "lsp" not in self.dependencies:
+            return []
+        return [
+            dep for dep in (self.dependencies.get("lsp") or []) if isinstance(dep, LSPDependency)
+        ]
+
+    def get_dev_lsp_dependencies(self) -> list["LSPDependency"]:
+        """Get list of dev LSP dependencies."""
+        if not self.dev_dependencies or "lsp" not in self.dev_dependencies:
+            return []
+        return [
+            dep
+            for dep in (self.dev_dependencies.get("lsp") or [])
+            if isinstance(dep, LSPDependency)
         ]
 
 

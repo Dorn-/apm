@@ -21,6 +21,7 @@ from pathlib import Path
 
 from apm_cli.core.null_logger import NullCommandLogger
 from apm_cli.deps.lockfile import LockFile, get_lockfile_path
+from apm_cli.integration._shared import deduplicate_deps, resolve_locked_apm_yml_paths
 from apm_cli.runtime.utils import find_runtime_binary
 from apm_cli.utils.console import (
     _get_console,  # noqa: F401 -- re-exported; mcp_integrator_install imports this via lazy import
@@ -227,30 +228,8 @@ class MCPIntegrator:
         from apm_cli.models.apm_package import APMPackage
 
         # Build set of expected apm.yml paths from apm.lock
-        locked_paths = None
-        direct_paths: builtins.set = builtins.set()
-        lockfile = None
-        if lock_path and lock_path.exists():
-            lockfile = LockFile.read(lock_path)
-            if lockfile is not None:
-                locked_paths = builtins.set()
-                for dep in lockfile.get_package_dependencies():
-                    if dep.repo_url:
-                        yml = (
-                            apm_modules_dir / dep.repo_url / dep.virtual_path / "apm.yml"
-                            if dep.virtual_path
-                            else apm_modules_dir / dep.repo_url / "apm.yml"
-                        )
-                        locked_paths.add(yml.resolve())
-                        if dep.depth == 1:
-                            direct_paths.add(yml.resolve())
-
-        # Prefer iterating lock-derived paths directly (existing files only).
-        # Fall back to full scan only when lock parsing is unavailable.
-        if locked_paths is not None:
-            apm_yml_paths = [path for path in sorted(locked_paths) if path.exists()]
-        else:
-            apm_yml_paths = apm_modules_dir.rglob("apm.yml")
+        resolved, direct_paths = resolve_locked_apm_yml_paths(apm_modules_dir, lock_path)
+        apm_yml_paths = resolved if resolved is not None else apm_modules_dir.rglob("apm.yml")
 
         collected = []
         for apm_yml_path in apm_yml_paths:
@@ -302,23 +281,7 @@ class MCPIntegrator:
         Root deps are listed before transitive, so root overlays take
         precedence.
         """
-        seen_names: builtins.set = builtins.set()
-        result = []
-        for dep in deps:
-            if hasattr(dep, "name"):
-                name = dep.name
-            elif isinstance(dep, dict):
-                name = dep.get("name", "")
-            else:
-                name = str(dep)
-            if not name:
-                if dep not in result:
-                    result.append(dep)
-                continue
-            if name not in seen_names:
-                seen_names.add(name)
-                result.append(dep)
-        return result
+        return deduplicate_deps(deps)
 
     # ------------------------------------------------------------------
     # Server info helpers
@@ -701,6 +664,24 @@ class MCPIntegrator:
                 use_rich=True,
             )
 
+        if "kiro" in target_runtimes:
+            from apm_cli.factory import ClientFactory
+
+            kiro_cfg = Path(
+                ClientFactory.create_client(
+                    "kiro",
+                    project_root=project_root_path,
+                    user_scope=user_scope or scope is InstallScope.USER,
+                ).get_config_path()
+            )
+            _clean_json_mcp_config(
+                kiro_cfg,
+                expanded_stale,
+                logger,
+                "Kiro MCP config",
+                use_rich=True,
+            )
+
         # Clean JetBrains Copilot user-scope mcp.json
         if "intellij" in target_runtimes:
             from apm_cli.adapters.client.intellij import _intellij_config_dir
@@ -836,6 +817,8 @@ class MCPIntegrator:
                 detected.add("llm")
             if re.search(r"\bwindsurf\b", command):
                 detected.add("windsurf")
+            if re.search(r"\bkiro\b", command):
+                detected.add("kiro")
 
         return builtins.list(detected)
 
@@ -954,10 +937,11 @@ class MCPIntegrator:
             logger.progress(f"Dependencies for {runtime}: {', '.join(mcp_deps)}")
             return False
         except ValueError as e:
+            from apm_cli.factory import ClientFactory
+
+            supported_runtimes = ", ".join(sorted(ClientFactory.supported_clients()))
             logger.warning(f"Runtime {runtime} not supported: {e}")
-            logger.progress(
-                "Supported runtimes: vscode, copilot, codex, cursor, opencode, gemini, claude, windsurf, intellij, llm"
-            )
+            logger.progress(f"Supported runtimes: {supported_runtimes}")
             return False
         except Exception as e:
             _log.debug("Unexpected error installing for runtime %s", runtime, exc_info=True)

@@ -222,6 +222,7 @@ class InstallContext:
     protocol_pref: Any  # ProtocolPreference
     allow_protocol_fallback: bool
     trust_transitive_mcp: bool
+    trust_canvas: bool
     no_policy: bool
     install_mode: Any  # InstallMode
     packages: tuple  # Original Click packages
@@ -430,10 +431,7 @@ def _resolve_package_references(
                         if logger:
                             logger.validation_fail(package, reason)
                         continue
-                    marketplace_provenance = {
-                        "discovered_via": marketplace_name,
-                        "marketplace_plugin_name": plugin_name,
-                    }
+                    marketplace_provenance = resolution.provenance(marketplace_name, plugin_name)
                     package = canonical_str
                     marketplace_dep_ref = getattr(resolution, "dependency_reference", None)
                 except Exception as mkt_err:
@@ -888,7 +886,7 @@ def _handle_mcp_install(
 @click.option(
     "--runtime",
     help=(
-        "Target specific runtime only (copilot, codex, vscode, cursor, opencode, gemini, claude, windsurf)"
+        "Target specific runtime only (copilot, claude, codex, cursor, gemini, intellij, kiro, opencode, vscode, windsurf)"
     ),
 )
 @click.option("--exclude", help="Exclude specific runtime from installation")
@@ -920,6 +918,11 @@ def _handle_mcp_install(
     help="Trust self-defined MCP servers from transitive packages (skip re-declaration requirement)",
 )
 @click.option(
+    "--trust-canvas-extensions",
+    is_flag=True,
+    help="[experimental] Deploy canvas extensions provided by dependencies. Canvas extensions are executable Node code and are blocked by default; this flag opts in. With --global the canvas deploys to ~/.copilot/extensions and the flag is always required. Requires the 'canvas' experimental feature.",
+)
+@click.option(
     "--parallel-downloads",
     type=int,
     default=4,
@@ -938,7 +941,7 @@ def _handle_mcp_install(
     "target",
     type=TargetParamType(),
     default=None,
-    help="Target harness(es) to deploy to. Comma-separated for multiple: --target claude,cursor. Repeating the flag (e.g. '-t a -t b') is NOT supported -- only the last value wins; use commas. Highest-priority entry in the resolution chain (--target > apm.yml targets: > auto-detect). Values: copilot, claude, cursor, opencode, codex, gemini, windsurf, agent-skills, all. 'agent-skills' deploys to .agents/skills/ (cross-client). 'all' = copilot+claude+cursor+opencode+codex+gemini+windsurf (excludes agent-skills); combine with 'agent-skills' for both. 'copilot-cowork' is also accepted when the copilot-cowork experimental flag is enabled (run 'apm experimental enable copilot-cowork'). 'copilot-app' is also accepted when the copilot-app experimental flag is enabled (run 'apm experimental enable copilot-app'). Note: '--target all' on 'apm compile' is deprecated; use 'apm compile --all' instead.",
+    help="Target harness(es) to deploy to. Comma-separated for multiple: --target claude,cursor. Repeating the flag (e.g. '-t a -t b') is NOT supported -- only the last value wins; use commas. Highest-priority entry in the resolution chain (--target > apm.yml targets: > auto-detect). Values: copilot, claude, cursor, opencode, codex, gemini, windsurf, kiro, agent-skills, all. 'agent-skills' deploys to .agents/skills/ (cross-client). 'all' = copilot+claude+cursor+opencode+codex+gemini+windsurf+kiro (excludes agent-skills); combine with 'agent-skills' for both. 'copilot-cowork' is also accepted when the copilot-cowork experimental flag is enabled (run 'apm experimental enable copilot-cowork'). 'copilot-app' is also accepted when the copilot-app experimental flag is enabled (run 'apm experimental enable copilot-app'). Note: '--target all' on 'apm compile' is deprecated; use 'apm compile --all' instead.",
 )
 @click.option(
     "--allow-insecure",
@@ -961,7 +964,7 @@ def _handle_mcp_install(
     "global_",
     is_flag=True,
     default=False,
-    help="Install to user scope (~/.apm/) instead of the current project. MCP servers target global-capable runtimes only (Copilot CLI, Codex CLI).",
+    help="Install to user scope (~/.apm/) instead of the current project. MCP servers target global-capable runtimes only (Copilot CLI, Claude Code, Codex CLI, Gemini CLI, Kiro, Windsurf, JetBrains Copilot).",
 )
 @click.option(
     "--ssh",
@@ -1097,7 +1100,7 @@ def _handle_mcp_install(
     metavar="ALIAS",
     help=(
         "Override the log/display label when installing a local bundle "
-        "(directory or .tar.gz produced by 'apm pack'). Only valid for "
+        "(directory, .zip, or .tar.gz produced by 'apm pack'). Only valid for "
         "local-bundle installs; passing --as without a local bundle path is rejected."
     ),
 )
@@ -1128,6 +1131,7 @@ def install(  # noqa: PLR0913
     frozen,
     verbose,
     trust_transitive_mcp,
+    trust_canvas_extensions,
     parallel_downloads,
     dev,
     target,
@@ -1173,7 +1177,8 @@ def install(  # noqa: PLR0913
         apm install --mcp api --url https://example.com/mcp    # MCP remote
         apm install --mcp fetch -- npx -y @mcp/server-fetch    # MCP stdio
         apm install ./build/my-bundle           # Deploy a local bundle (directory)
-        apm install ./my-bundle.tar.gz          # Deploy a local bundle (archive)
+        apm install ./my-bundle.zip             # Deploy a local bundle (archive)
+        apm install ./my-bundle.tar.gz          # Deploy a local bundle (legacy archive)
         apm install ./bundle --as custom-name   # Local bundle with custom log label
 
     Environment variables:
@@ -1253,7 +1258,10 @@ def install(  # noqa: PLR0913
             from ..bundle.local_bundle import detect_local_bundle as _detect_lb
             from ..install.local_bundle_handler import install_local_bundle as _install_lb
 
-            _bundle_info = _detect_lb(_probe)
+            try:
+                _bundle_info = _detect_lb(_probe)
+            except ValueError as exc:
+                raise click.UsageError(f"Bundle security check failed: {exc}") from exc
             if _bundle_info is not None:
                 _install_lb(
                     bundle_info=_bundle_info,
@@ -1266,6 +1274,7 @@ def install(  # noqa: PLR0913
                     alias=alias,
                     logger=logger,
                     legacy_skill_paths=legacy_skill_paths,
+                    trust_canvas=trust_canvas_extensions,
                     # Rejected-flag context for consolidated UsageError:
                     rejected_flags={
                         "--update": update,
@@ -1291,15 +1300,14 @@ def install(  # noqa: PLR0913
                 # success path.  See issue #1207 D3.
                 summary_rendered = True
                 return
-            # IM7: path exists but isn't a recognised bundle.  For tarball
-            # extensions (.tar.gz / .tgz) the user clearly meant a bundle
-            # artifact, so raise a targeted UsageError instead of falling
-            # through to the registry path (which would try to clone).
+            # IM7: path exists but isn't a recognised bundle.  For archive
+            # extensions (.zip / .tar.gz / .tgz) raise a targeted UsageError
+            # instead of falling through to the registry clone path.
             # For bare directories we still fall through, because
             # ``apm install ./packages/source-pkg`` is a supported local-path
             # install that goes through the dependency-resolver pipeline.
             _suffix = _probe.name.lower()
-            if _probe.is_file() and (_suffix.endswith(".tar.gz") or _suffix.endswith(".tgz")):
+            if _probe.is_file() and _suffix.endswith((".zip", ".tar.gz", ".tgz")):
                 # Distinguish legacy --format apm bundles (apm.lock.yaml
                 # present, plugin.json absent) from arbitrary tarballs so
                 # the error message guides the user to the right next step.
@@ -1323,7 +1331,7 @@ def install(  # noqa: PLR0913
         # silently ignoring it.
         if alias:
             raise click.UsageError(
-                "--as requires a local bundle path (directory or .tar.gz "
+                "--as requires a local bundle path (directory, .zip, or .tar.gz "
                 "produced by 'apm pack'). It has no effect on registry installs."
             )
         # HACK(#852): surface --verbose to deeper auth layers via env var until
@@ -1535,6 +1543,7 @@ def install(  # noqa: PLR0913
             protocol_pref=protocol_pref,
             allow_protocol_fallback=allow_protocol_fallback,
             trust_transitive_mcp=trust_transitive_mcp,
+            trust_canvas=trust_canvas_extensions,
             no_policy=no_policy,
             audit_override=audit_override,
             install_mode=InstallMode(only) if only else InstallMode.ALL,
@@ -1550,7 +1559,7 @@ def install(  # noqa: PLR0913
             skill_subset_from_cli=bool(skill_names),
         )
 
-        apm_count, mcp_count, apm_diagnostics = _install_apm_packages(
+        apm_count, mcp_count, lsp_count, apm_diagnostics = _install_apm_packages(
             install_ctx,
             outcome,
         )
@@ -1559,6 +1568,7 @@ def install(  # noqa: PLR0913
             logger=logger,
             apm_count=apm_count,
             mcp_count=mcp_count,
+            lsp_count=lsp_count,
             apm_diagnostics=apm_diagnostics,
             force=force,
             elapsed_seconds=time.perf_counter() - install_started_at,
@@ -1639,7 +1649,7 @@ def _install_apm_packages(ctx, outcome):
             ``None`` when no explicit packages were passed).
 
     Returns:
-        Tuple of ``(apm_count, mcp_count, apm_diagnostics)``.
+        Tuple of ``(apm_count, mcp_count, lsp_count, apm_diagnostics)``.
     """
     logger = ctx.logger
 
@@ -1677,6 +1687,7 @@ def _install_apm_packages(ctx, outcome):
     # Determine what to install based on install mode
     should_install_apm = ctx.install_mode != InstallMode.MCP
     should_install_mcp = ctx.install_mode != InstallMode.APM
+    should_install_lsp = should_install_mcp
 
     # Show what will be installed if dry run
     if ctx.dry_run:
@@ -1711,7 +1722,7 @@ def _install_apm_packages(ctx, outcome):
             only_packages=ctx.only_packages,
             apm_dir=ctx.apm_dir,
         )
-        return 0, 0, None  # render_and_exit exits; this line is defensive
+        return 0, 0, 0, None  # render_and_exit exits; this line is defensive
 
     # Install APM dependencies first (if requested)
     apm_count = 0
@@ -1785,6 +1796,7 @@ def _install_apm_packages(ctx, outcome):
                 skill_subset=ctx.skill_subset,
                 skill_subset_from_cli=ctx.skill_subset_from_cli,
                 refresh=ctx.refresh,
+                trust_canvas=ctx.trust_canvas,
             )
             apm_count = install_result.installed_count
             apm_diagnostics = install_result.diagnostics
@@ -1945,17 +1957,35 @@ def _install_apm_packages(ctx, outcome):
         # mcp_servers.  Restore the previous set so it is not lost.
         MCPIntegrator.update_lockfile(old_mcp_servers, _lock_path, mcp_configs=old_mcp_configs)
 
+    # -------------------------------------------------------------------------
+    # LSP integration (extracted to install/lsp/integration.py)
+    # -------------------------------------------------------------------------
+    from apm_cli.install.lsp import run_lsp_integration
+
+    lsp_count = run_lsp_integration(
+        apm_package=apm_package,
+        apm_modules_path=apm_modules_path,
+        lock_path=_lock_path,
+        existing_lock=_existing_lock,
+        project_root=ctx.project_root,
+        user_scope=(ctx.scope is InstallScope.USER),
+        should_install=should_install_lsp,
+        logger=logger,
+        diagnostics=apm_diagnostics,
+        target_context=(mcp_apm_config, ctx.target, ctx.scope),
+    )
+
     # Local .apm/ content integration is now handled inside the
     # install pipeline (phases/integrate.py + phases/post_deps_local.py,
     # refactor F3).  The duplicate target resolution, integrator
     # initialization, and inline stale-cleanup block that lived here
     # have been removed.
 
-    return apm_count, mcp_count, apm_diagnostics
+    return apm_count, mcp_count, lsp_count, apm_diagnostics
 
 
 def _post_install_summary(
-    *, logger, apm_count, mcp_count, apm_diagnostics, force, elapsed_seconds=None
+    *, logger, apm_count, mcp_count, lsp_count=0, apm_diagnostics, force, elapsed_seconds=None
 ):
     """Thin shim forwarding to :func:`apm_cli.install.summary.render_post_install_summary`.
 
@@ -1969,6 +1999,7 @@ def _post_install_summary(
         logger=logger,
         apm_count=apm_count,
         mcp_count=mcp_count,
+        lsp_count=lsp_count,
         apm_diagnostics=apm_diagnostics,
         force=force,
         elapsed_seconds=elapsed_seconds,
@@ -2020,6 +2051,7 @@ def _install_apm_dependencies(  # noqa: PLR0913
     plan_callback=None,
     refresh: bool = False,
     lockfile_only: bool = False,
+    trust_canvas: bool = False,
 ):
     """Thin wrapper -- builds an :class:`InstallRequest` and delegates to
     :class:`apm_cli.install.service.InstallService`.
@@ -2060,5 +2092,6 @@ def _install_apm_dependencies(  # noqa: PLR0913
         plan_callback=plan_callback,
         refresh=refresh,
         lockfile_only=lockfile_only,
+        trust_canvas=trust_canvas,
     )
     return InstallService().run(request)

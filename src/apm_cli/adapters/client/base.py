@@ -4,7 +4,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ...utils.console import _rich_error, _rich_warning
 
@@ -27,6 +27,11 @@ _ENV_PLACEHOLDER_RE = re.compile(r"<([A-Z_][A-Z0-9_]*)>|" + _ENV_VAR_RE.pattern)
 # Detects the legacy ``<VAR>`` placeholder syntax only. Used to aggregate
 # deprecation warnings across all servers in a single install run.
 _LEGACY_ANGLE_VAR_RE = re.compile(r"<([A-Z_][A-Z0-9_]*)>")
+
+
+def registry_field_is_required(field: dict[str, Any]) -> bool:
+    """Return True unless registry metadata explicitly marks a field optional."""
+    return field.get("required", field.get("is_required", True)) is not False
 
 
 def _translate_env_placeholder(value):
@@ -149,6 +154,21 @@ class MCPClientAdapter(ABC):
         # subclass path constructed it.
         self._last_env_placeholder_keys: set[str] = set()
         self._last_legacy_angle_vars: set[str] = set()
+
+    def _format_runtime_env_placeholder(self, name: str) -> str:
+        """Return the target runtime's env-var placeholder syntax for *name*."""
+        return "${" + name + "}"
+
+    def _translate_env_placeholder_for_runtime(self, value):
+        """Translate env-var placeholders to this adapter's runtime syntax."""
+        if not isinstance(value, str):
+            return value
+
+        def _to_runtime(match):
+            var_name = match.group(1) or match.group(2)
+            return self._format_runtime_env_placeholder(var_name)
+
+        return _ENV_PLACEHOLDER_RE.sub(_to_runtime, value)
 
     @property
     def project_root(self) -> Path:
@@ -390,9 +410,7 @@ class MCPClientAdapter(ABC):
                     continue
                 if _has_env_placeholder(raw_value):
                     self._last_legacy_angle_vars.update(_extract_legacy_angle_vars(raw_value))
-                    translated[name] = _translate_env_placeholder(raw_value)
-                    # Record every ${VAR} in the translated value (handles
-                    # both ${env:VAR} -> ${VAR} and bare ${VAR} cases).
+                    translated[name] = self._translate_env_placeholder_for_runtime(raw_value)
                     placeholder_keys.extend(
                         m.group(1) for m in _ENV_VAR_RE.finditer(translated[name])
                     )
@@ -403,7 +421,7 @@ class MCPClientAdapter(ABC):
                 else:
                     # Literal value present in apm.yml -- replace with a
                     # runtime placeholder so the secret never touches disk.
-                    translated[name] = "${" + name + "}"
+                    translated[name] = self._format_runtime_env_placeholder(name)
                     placeholder_keys.append(name)
             self._last_env_placeholder_keys = set(placeholder_keys)
             return translated
@@ -421,7 +439,7 @@ class MCPClientAdapter(ABC):
                 if name in self._DEFAULT_GITHUB_ENV:
                     resolved[name] = self._DEFAULT_GITHUB_ENV[name]
                 else:
-                    resolved[name] = "${" + name + "}"
+                    resolved[name] = self._format_runtime_env_placeholder(name)
                     placeholder_keys.append(name)
             self._last_env_placeholder_keys = set(placeholder_keys)
             return resolved
@@ -468,7 +486,7 @@ class MCPClientAdapter(ABC):
             name = env_var.get("name", "")
             if not name:
                 continue
-            required = env_var.get("required", True)
+            required = registry_field_is_required(env_var)
 
             value = env_overrides.get(name) or os.getenv(name)
             if not value and required and not skip_prompting:
@@ -510,7 +528,7 @@ class MCPClientAdapter(ABC):
             self._last_env_placeholder_keys.update(legacy_keys)
             for match in _ENV_VAR_RE.finditer(value):
                 self._last_env_placeholder_keys.add(match.group(1))
-            return _translate_env_placeholder(value)
+            return self._translate_env_placeholder_for_runtime(value)
 
         from rich.prompt import Prompt
 
@@ -560,7 +578,7 @@ class MCPClientAdapter(ABC):
 
         if self._supports_runtime_env_substitution:
             self._last_legacy_angle_vars.update(_extract_legacy_angle_vars(processed))
-            processed = _translate_env_placeholder(processed)
+            processed = self._translate_env_placeholder_for_runtime(processed)
         else:
             # Resolve only the legacy ``<VAR>`` form; newer syntaxes are
             # preserved verbatim for backward compatibility.
@@ -620,22 +638,25 @@ class MCPClientAdapter(ABC):
         return server_info
 
     @staticmethod
-    def _determine_config_key(server_url: str, server_name: str) -> str:
+    def _determine_config_key(server_url: str, server_name: str | None) -> str:
         """Return the configuration key to use for *server_url*/*server_name*.
 
-        The caller-supplied *server_name* takes precedence; if empty the last
-        path segment of *server_url* is used as a fallback, which mirrors the
-        convention ``owner/repo -> repo``.
+        The caller-supplied *server_name* takes precedence. If it is absent,
+        preserve npm-style scoped names such as ``@scope/name`` (one slash by
+        npm convention) while keeping the historical ``owner/repo -> repo``
+        fallback for registry paths.
 
         Args:
             server_url: Registry reference used as fallback source.
-            server_name: Explicit caller-supplied name (may be empty string).
+            server_name: Explicit caller-supplied name, if any.
 
         Returns:
             Non-empty configuration key string.
         """
         if server_name:
             return server_name
+        if server_url.startswith("@") and server_url.count("/") == 1:
+            return server_url
         if "/" in server_url:
             return server_url.split("/")[-1]
         return server_url
@@ -781,12 +802,15 @@ class MCPClientAdapter(ABC):
         )
 
         # First pass: identify variables with empty values to warn the user.
-        empty_value_vars = [ev for ev in env_vars if ev.get("required") and not ev.get("value")]
+        empty_value_vars = [
+            ev for ev in env_vars if registry_field_is_required(ev) and not ev.get("value")
+        ]
         if empty_value_vars and skip_prompting:
             var_names = [ev.get("name") for ev in empty_value_vars]
             _rich_warning(
-                f"Warning: The following required environment variables have no default "
-                f"value and cannot be prompted in non-interactive mode: {var_names}"
+                f"Required environment variables have no default value and cannot be "
+                f"prompted in non-interactive mode: {var_names}. Set them in your "
+                "environment and rerun `apm install`."
             )
 
         for env_var in env_vars:
@@ -821,9 +845,9 @@ class MCPClientAdapter(ABC):
 
             # Priority 4: interactive prompt
             default_value = env_var.get("value", "")
-            required = env_var.get("required", False)
+            required = registry_field_is_required(env_var)
 
-            if not skip_prompting:
+            if not skip_prompting and required:
                 from rich.prompt import Prompt
 
                 description = env_var.get("description", "")
@@ -843,11 +867,10 @@ class MCPClientAdapter(ABC):
                 resolved[name] = default_value
             elif required:
                 _rich_warning(
-                    f"Warning: Required environment variable '{name}' could not be resolved. "
-                    f"The MCP server may not function correctly."
+                    f"Required environment variable '{name}' could not be resolved. "
+                    f"The MCP server may not function correctly. Set {name} in your "
+                    "environment and rerun `apm install`."
                 )
                 resolved[name] = ""
-            else:
-                resolved[name] = default_value
 
         return resolved

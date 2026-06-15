@@ -18,6 +18,22 @@ APM checks the active `gh` CLI account before invoking OS credential helpers. Th
 
 For multi-account Git Credential Manager setups, see the [Multi-account Git Credential Manager](https://microsoft.github.io/apm/getting-started/authentication/#multi-account-git-credential-manager) section in the main authentication guide.
 
+## GitLab hosts
+
+`gitlab.com` is detected automatically. For self-managed GitLab, set
+`GITLAB_HOST`, list multiple hosts in `APM_GITLAB_HOSTS`, or mark a single
+object-form dependency with `type: gitlab`:
+
+```yaml
+- git: https://code.acme.com/platform/standards.git
+  type: gitlab
+```
+
+GitLab credentials use `GITLAB_APM_PAT`, then `GITLAB_TOKEN`, then host
+credentials. GitHub PAT variables are not used for GitLab-class hosts. See the
+main [authentication guide](https://microsoft.github.io/apm/getting-started/authentication/)
+for the full host-class precedence rules.
+
 ## Per-org setup
 
 Use per-org tokens when accessing packages across multiple organizations:
@@ -93,6 +109,26 @@ export GITHUB_APM_PAT_MYORG=ghp_ghes_token
 apm install myorg/internal-package       # resolves to github.company.com
 apm pack                                 # marketplace.json also resolves against github.company.com
 ```
+
+## GitLab (SaaS or self-managed)
+
+APM fetches `path:`-specified files from GitLab dependencies via git sparse/partial
+checkout (the same transport as the clone). Git transport is tried first, so SSH
+keys and git credential helpers work without any extra token, and self-hosted
+GitLab instances where the API returns 410 (disabled) no longer fail. Explicit
+`git:` / SSH URLs carry the host in the dependency; set `GITLAB_HOST` (or
+`APM_GITLAB_HOSTS`) only when bare-host or shorthand forms should classify as
+GitLab.
+
+If git transport is unavailable, `GITLAB_APM_PAT` is the fallback:
+
+```bash
+export GITLAB_APM_PAT=glpat_your_token
+apm install
+```
+
+`GITLAB_TOKEN` is accepted as a lower-precedence fallback. `git credential fill` is
+also tried (same as for GitHub) so credential-manager users need no env var at all.
 
 ## GHE Cloud data residency (*.ghe.com)
 
@@ -185,6 +221,20 @@ field and surfaces as an "Unknown top-level policy key" warning rather
 than a hard parse error -- but storing tokens there is still
 unsupported and committing one would leak the secret into the repo.
 Store tokens in env vars or `~/.apm/config.json` only.
+
+## External scanner LLM keys (experimental)
+
+When LLM-powered analysis is enabled for an external SARIF scanner (`apm
+audit --external <name> --external-llm`, behind `apm experimental enable
+external-scanners`), the scanner reads its own API key from your
+environment -- `OPENAI_API_KEY` or `NVIDIA_INFERENCE_KEY`. APM **never
+stores, prompts for, or persists** these keys; they come straight from
+your shell environment and are forwarded to the scanner subprocess only
+when LLM mode is active for that run, then stripped otherwise. If
+`--external-llm` is set and no key is present, the scan fails closed with
+an actionable error. Scanner stderr is secret-redacted before APM surfaces
+it in any error or log. Do not pass keys as scanner flags (`--external-args`
+rejects secret-looking flags) -- export them as env vars instead.
 
 ## Install validation chain
 

@@ -90,6 +90,39 @@ The check fires from all four call sites (`policy_gate`,
 `apm install`, `apm install <pkg>`, `apm deps update`, and
 `apm audit --ci` all enforce the same gate.
 
+## External scanner governance (experimental)
+
+Gate the behaviour of third-party SARIF scanners run by `apm audit
+--external <name>` (behind `apm experimental enable external-scanners`).
+The stance is **restrict-only**: policy can tighten scanner behaviour but
+never adds argv tokens itself and never forces LLM egress from an
+untrusted project-local policy.
+
+```yaml
+# .github/apm-policy.yml
+security:
+  audit:
+    external: [skillspector]              # scanners the org permits
+    scanners:                             # NEW, optional per-scanner governance
+      skillspector:
+        allow_args: false                 # strip all user/CLI extra-args (kill-switch)
+```
+
+| Field | Default | Behavior |
+|-------|---------|----------|
+| `scanners.<name>.allow_args` | unset (no opinion) | When `false`, all user/CLI `--external-args` and config `external.<name>.args` are stripped to an empty list before the scanner runs -- locks the scanner to its vetted invocation. AND-merged across inheritance: any ancestor setting `false` wins. |
+
+Notes:
+- Policy **never injects argv** -- only the local user contributes scanner
+  flags (via `--external-args` or `external.<name>.args`), and those are
+  allowlist-validated by the adapter.
+- `allow_args: false` is enforced at the **install-time** audit path (which
+  loads org policy). A bare `apm audit` does not load org policy, so it
+  relies on the adapter's allowlist for arg safety.
+- LLM mode is opt-in by the user only; a project-local policy cannot mandate
+  it (this avoids turning a checked-in policy file into a content-exfiltration
+  channel).
+
 ## Plugin bin/ deployment governance
 
 When a `marketplace_plugin` package ships a `bin/` directory, a global
@@ -116,6 +149,32 @@ bin_deploy:
 Deployed executables are placed on Claude Code's `PATH` and invoked
 without further confirmation, so use this field to opt out in
 environments where plugin executables are not trusted by default.
+
+## Canvas extension trust (experimental)
+
+Behind the `canvas` experimental flag, a package may ship a Copilot CLI canvas
+extension under `.apm/extensions/<name>/extension.mjs` (executable Node.js).
+Because a canvas from a dependency is arbitrary executable code, APM **blocks
+dependency-provided canvases by default**: the consumer must pass
+`--trust-canvas-extensions` to deploy them. A first-party canvas in the root
+package being installed deploys once the flag is on; dependency canvases always
+require the trust flag.
+
+At **project scope** a canvas deploys to `.github/extensions/<name>/`. With
+`--global`, a **dependency-provided** canvas deploys to
+`~/.copilot/extensions/<name>/` so it is available in every Copilot session;
+global install always requires `--trust-canvas-extensions` (full-account blast
+radius), supports only the default `~/.copilot` location (a non-default
+`$COPILOT_HOME` is refused), and does not deploy first-party root canvases
+(package them as a dependency instead). `apm uninstall --global` prunes the
+global canvas.
+
+The trust gate is enforced on every install path -- normal install, offline
+bundle install (`apm install <bundle>`), and `apm unpack` -- so a vendored
+bundle cannot smuggle an executable canvas past trust. The flag is a
+feature-availability toggle, not a security gate; the trust requirement holds
+regardless of the flag. An enterprise policy field for canvas trust is a
+deferred follow-up and is not part of this experimental release.
 
 ## Local content governance
 

@@ -234,10 +234,21 @@ def _resolve_compile_target(target):
                 families.add("agents")
 
         if len(families) >= 2:
-            # Single-target copilot collapses {"vscode","agents"} to bare
-            # "vscode" for routing parity with single-string -t copilot.
+            # Collapse {"vscode","agents"} to bare "vscode" ONLY when the
+            # original target list contains no non-Copilot agents-family
+            # targets (e.g. codex, opencode, windsurf).  When mixed targets
+            # like [copilot, codex] are requested, keep the frozenset so
+            # downstream dedup logic knows non-Copilot targets also consume
+            # AGENTS.md (issue #1678).
             if families == {"vscode", "agents"}:
-                return "vscode"
+                _vscode_names = {"copilot", "vscode", "agents"}
+                has_non_vscode_agents = any(
+                    name in target_set
+                    for name, profile in KNOWN_TARGETS.items()
+                    if profile.compile_family == "agents" and name not in _vscode_names
+                )
+                if not has_non_vscode_agents:
+                    return "vscode"
             return frozenset(families)
         if "claude" in families:
             return "claude"
@@ -836,7 +847,7 @@ def _run_compilation(
     "-t",
     type=TargetParamType(),
     default=None,
-    help="Target platform (comma-separated). Values: copilot, claude, cursor, opencode, codex, gemini, windsurf, agent-skills, all. 'agent-skills' deploys to .agents/skills/ (cross-client). 'all' = copilot+claude+cursor+opencode+codex+gemini+windsurf (excludes agent-skills); combine with 'agent-skills' for both.",
+    help="Target platform (comma-separated). Values: copilot, claude, cursor, opencode, codex, gemini, windsurf, kiro, agent-skills, all. 'agent-skills' deploys to .agents/skills/ (cross-client). 'all' = copilot+claude+cursor+opencode+codex+gemini+windsurf+kiro (excludes agent-skills); combine with 'agent-skills' for both.",
 )
 @click.option(
     "--dry-run",
@@ -873,7 +884,10 @@ def _run_compilation(
 @click.option(
     "--clean",
     is_flag=True,
-    help="Remove orphaned AGENTS.md files that are no longer generated",
+    help=(
+        "Remove orphaned output files (AGENTS.md, CLAUDE.md) no longer generated. "
+        "Hand-authored files are never deleted; use --dry-run to preview removals."
+    ),
 )
 @click.option(
     "--legacy-skill-paths",
@@ -975,7 +989,12 @@ def compile(  # noqa: PLR0913 -- Click handler
     * --dry-run: Preview compilation without writing files (shows placement decisions)
     * --verbose: Show detailed source attribution and optimizer analysis
     * --local-only: Ignore dependencies, compile only local .apm/ primitives
-    * --clean: Remove orphaned AGENTS.md files that are no longer generated
+    * --clean: Remove orphaned AGENTS.md files no longer generated; for
+      --target claude, also removes a stale APM-generated CLAUDE.md when
+      deduplication suppresses CLAUDE.md generation entirely (instructions
+      already in .claude/rules/ with no constitution or other keep-alive).
+      Hand-authored files are never deleted. Combine with --dry-run to
+      preview removals before they happen.
     """
     logger = CommandLogger("compile", verbose=verbose, dry_run=dry_run)
 

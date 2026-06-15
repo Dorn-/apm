@@ -12,6 +12,7 @@ Covers _compile_user_root_contexts_after_install and its integration in run():
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -89,8 +90,8 @@ class TestCompileUserRootContextsAfterInstall:
 
         # Two written files
         results = [
-            {"target": "claude", "path": Path(".claude/CLAUDE.md"), "status": "written"},
-            {"target": "vscode", "path": Path(".vscode/AGENTS.md"), "status": "written"},
+            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="written"),
+            SimpleNamespace(target="vscode", path=Path(".vscode/AGENTS.md"), status="written"),
         ]
 
         with (
@@ -109,6 +110,7 @@ class TestCompileUserRootContextsAfterInstall:
         mock_logger.verbose_detail.assert_called_once()
         call_str = str(mock_logger.verbose_detail.call_args)
         assert "claude" in call_str
+        assert "CLAUDE.md" in call_str
         assert "vscode" in call_str
 
     def test_no_logging_when_no_files_written(self):
@@ -124,7 +126,7 @@ class TestCompileUserRootContextsAfterInstall:
 
         # No written files
         results = [
-            {"target": "claude", "path": None, "status": "skipped-no-instructions"},
+            SimpleNamespace(target="claude", path=None, status="skipped-no-instructions"),
         ]
 
         with (
@@ -154,7 +156,7 @@ class TestCompileUserRootContextsAfterInstall:
 
         # Files written, but logger is None
         results = [
-            {"target": "claude", "path": Path(".claude/CLAUDE.md"), "status": "written"},
+            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="written"),
         ]
 
         with (
@@ -169,6 +171,36 @@ class TestCompileUserRootContextsAfterInstall:
         ):
             # Should not raise
             _compile_user_root_contexts_after_install(ctx)
+
+    def test_warns_when_compile_reports_error(self):
+        """Compile errors are surfaced through diagnostics."""
+        from apm_cli.core.scope import InstallScope
+        from apm_cli.install.phases.finalize import (
+            _compile_user_root_contexts_after_install,
+        )
+
+        source_root = Path.home() / ".apm"
+        ctx = _make_install_context(scope=InstallScope.USER)
+        results = [
+            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="error:denied"),
+        ]
+
+        with (
+            patch(
+                "apm_cli.core.scope.get_apm_dir",
+                return_value=source_root,
+            ),
+            patch(
+                "apm_cli.compilation.compile_user_root_contexts",
+                return_value=results,
+            ),
+        ):
+            _compile_user_root_contexts_after_install(ctx)
+
+        ctx.diagnostics.warn.assert_called_once()
+        warning = ctx.diagnostics.warn.call_args.args[0]
+        assert "claude" in warning
+        assert "apm compile -g" in warning
 
 
 # ---------------------------------------------------------------------------

@@ -113,7 +113,7 @@ The dry-run output shows `[dry-run] would remove stale CLAUDE.md -- instructions
 
 | Flag | Description |
 |------|-------------|
-| `-g, --global` | Compile user-scope root context files from `~/.apm/apm_modules`. Reads globally installed packages and writes one root context file per active target (e.g. `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`). Not valid with `--watch` or `--root`. Exits non-zero if `~/.apm/apm_modules` does not exist. |
+| `-g, --global` | Compile user-scope root context files from `~/.apm/apm_modules`. Reads globally installed packages and writes one root context file per supported user-scope target (e.g. `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`). Not valid with project-output flags such as `--target`, `--all`, `--watch`, `--root`, or `--output`. Exits non-zero if `~/.apm/apm_modules` does not exist. |
 
 `apm install --global` automatically runs this step after installing packages.
 Use `apm compile --global` to re-run it manually after adding or removing global packages.

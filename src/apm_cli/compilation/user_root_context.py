@@ -52,23 +52,6 @@ class UserRootCompileResult:
     path: Path | None
     status: str
 
-    def __getitem__(self, key: str) -> object:
-        """Provide dict-style access for existing result consumers."""
-        if key == "target":
-            return self.target
-        if key == "path":
-            return self.path
-        if key == "status":
-            return self.status
-        raise KeyError(key)
-
-    def get(self, key: str, default: object = None) -> object:
-        """Provide dict-style optional access for existing result consumers."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
 
 def _resolve_deploy_root(profile: TargetProfile) -> Path:
     """Return the absolute deploy root for a user-scoped TargetProfile.

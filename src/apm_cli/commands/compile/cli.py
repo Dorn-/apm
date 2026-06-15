@@ -370,16 +370,22 @@ def _handle_global_flag(dry_run: bool) -> int:
         return 0
 
     has_error = False
+    written_count = 0
+    would_write_count = 0
+    unchanged_count = 0
     for entry in results:
-        status = entry["status"]
-        tname = entry["target"]
-        path = entry.get("path")
+        status = entry.status
+        tname = entry.target
+        path = entry.path
         if status == "written":
             _rich_success(f"{tname}: wrote {path}", symbol="check")
+            written_count += 1
         elif status == "would-write":
             _rich_info(f"{tname}: would write {path} (dry-run)", symbol="preview")
+            would_write_count += 1
         elif status == "unchanged":
             _rich_info(f"{tname}: unchanged {path}", symbol="info")
+            unchanged_count += 1
         elif status == "skipped-hand-authored":
             _rich_info(f"{tname}: skipped (hand-authored) {path}", symbol="info")
         elif status == "skipped-no-instructions":
@@ -387,6 +393,18 @@ def _handle_global_flag(dry_run: bool) -> int:
         elif status.startswith("error:"):
             _rich_error(f"{tname}: {status[6:]}", symbol="error")
             has_error = True
+
+    if not has_error:
+        changed_count = written_count + would_write_count
+        if changed_count:
+            verb = "Would compile" if dry_run else "Compiled"
+            _rich_success(
+                f"{verb} {changed_count} user-scope root context file(s); "
+                f"{unchanged_count} unchanged.",
+                symbol="check",
+            )
+        else:
+            _rich_info("No user-scope root context files changed.", symbol="info")
 
     return 1 if has_error else 0
 
@@ -1017,6 +1035,32 @@ def compile(  # noqa: PLR0913 -- Click handler
     # --global: compile user-scope root context files from ~/.apm/apm_modules.
     # Must be checked before --watch / --root guards so we return early.
     if global_:
+
+        def _explicit_option(name: str) -> bool:
+            try:
+                from click.core import ParameterSource
+
+                return ctx.get_parameter_source(name) is not ParameterSource.DEFAULT
+            except Exception:
+                return False
+
+        invalid_options: list[tuple[object, str]] = [
+            (compile_all, "--all"),
+            (target, "--target"),
+            (_explicit_option("output"), "--output"),
+            (chatmode, "--chatmode"),
+            (validate, "--validate"),
+            (single_agents, "--single-agents"),
+            (local_only, "--local-only"),
+            (clean, "--clean"),
+            (no_dedup, "--no-dedup"),
+            (no_links, "--no-links"),
+            (_explicit_option("with_constitution"), "--with-constitution/--no-constitution"),
+            (legacy_skill_paths, "--legacy-skill-paths"),
+        ]
+        for value, flag in invalid_options:
+            if value:
+                raise click.UsageError(f"--global is not valid with {flag}")
         if watch:
             raise click.UsageError("--global is not valid with --watch")
         if root:

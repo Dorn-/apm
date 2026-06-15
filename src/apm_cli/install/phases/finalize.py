@@ -30,10 +30,16 @@ def _compile_user_root_contexts_after_install(ctx: InstallContext) -> None:
     # Pass logger=None so compile_user_root_contexts uses the stdlib logger;
     # ctx.logger is an InstallLogger which does not expose the stdlib debug/info API.
     results = compile_user_root_contexts(targets, source_root, dry_run=False, logger=None)
-    written = [r for r in results if r.get("status") == "written"]
+    written = [r for r in results if r.status == "written"]
+    errors = [r for r in results if r.status.startswith("error:")]
     if written and ctx.logger:
-        target_names = ", ".join(str(r["target"]) for r in written)
-        ctx.logger.verbose_detail(f"Compiled user-scope root contexts: {target_names}")
+        target_paths = ", ".join(f"{r.target}: {r.path}" for r in written)
+        ctx.logger.verbose_detail(f"Compiled user-scope root contexts: {target_paths}")
+    for error in errors:
+        ctx.diagnostics.warn(
+            f"Could not compile user-scope root context for {error.target}: "
+            f"{error.status[6:]}. Run 'apm compile -g' for details."
+        )
 
 
 def run(ctx: InstallContext) -> InstallResult:

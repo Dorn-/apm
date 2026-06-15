@@ -253,7 +253,7 @@ apm compile -g --dry-run
 ```
 
 This reads **global instructions** from `~/.apm/apm_modules/` (instructions
-without an `apply_to:` field) and writes user-scope root context files:
+without `applyTo:` frontmatter) and writes user-scope root context files:
 
 - `~/.claude/CLAUDE.md` (or `$CLAUDE_CONFIG_DIR/CLAUDE.md`)
 - `~/.codex/AGENTS.md`, `~/.copilot/AGENTS.md`, `~/.cursor/AGENTS.md`, etc.
@@ -267,11 +267,12 @@ be written without modifying files.
 
 ### Constraints
 
-- `--global` cannot be combined with `--watch` or `--root`.
-- Skills-only packages (no global instructions) do not write root files.
 - To integrate global compile into your install flow, use
   `apm install -g` (see [Install packages](../consumer/install-packages/)), which
   automatically runs compile after installing global packages.
+- `--global` cannot be combined with project-output flags such as `--target`,
+  `--all`, `--watch`, `--root`, or `--output`.
+- Skills-only packages (no global instructions) do not write root files.
 
 ## Pitfalls
 

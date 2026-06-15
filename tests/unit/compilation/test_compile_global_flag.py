@@ -14,6 +14,7 @@ Covers the _handle_global_flag function and --global integration in the compile 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -23,13 +24,9 @@ from click.testing import CliRunner
 # ---------------------------------------------------------------------------
 
 
-def _make_result(target: str, path: str | None, status: str) -> dict:
-    """Create a result dict as returned by compile_user_root_contexts."""
-    return {
-        "target": target,
-        "path": Path(path) if path else None,
-        "status": status,
-    }
+def _make_result(target: str, path: str | None, status: str) -> SimpleNamespace:
+    """Create a result object as returned by compile_user_root_contexts."""
+    return SimpleNamespace(target=target, path=Path(path) if path else None, status=status)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +378,28 @@ class TestCompileGlobalCommand:
         assert result.exit_code == 2
         assert "global" in result.output.lower()
         assert "root" in result.output.lower()
+        assert "Usage:" in result.output
+
+    def test_global_with_target_rejected(self):
+        """--global and --target together -> Click usage error."""
+        from apm_cli.commands.compile.cli import compile as compile_cmd
+
+        result = CliRunner().invoke(compile_cmd, ["--global", "--target", "claude"])
+
+        assert result.exit_code == 2
+        assert "global" in result.output.lower()
+        assert "target" in result.output.lower()
+        assert "Usage:" in result.output
+
+    def test_global_with_output_rejected(self):
+        """--global and --output together -> Click usage error."""
+        from apm_cli.commands.compile.cli import compile as compile_cmd
+
+        result = CliRunner().invoke(compile_cmd, ["--global", "--output", "AGENTS.md"])
+
+        assert result.exit_code == 2
+        assert "global" in result.output.lower()
+        assert "output" in result.output.lower()
         assert "Usage:" in result.output
 
     def test_global_success_no_exit(self, tmp_path):

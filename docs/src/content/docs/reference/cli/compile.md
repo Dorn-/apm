@@ -118,9 +118,11 @@ globally installed instruction packages -- one command, no per-tool setup.
 |------|-------------|
 | `-g, --global` | Compile user-scope root context files from `~/.apm/apm_modules`. Reads globally installed packages and writes one root context file per supported user-scope target (e.g. `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`). Not valid with project-output flags such as `--target`, `--all`, `--watch`, `--root`, or `--output`. Exits non-zero if `~/.apm/apm_modules` does not exist. |
 
-`apm install --global` automatically runs this step after installing packages.
-Use `apm compile --global` to re-run it manually after adding or removing global packages.
-Hand-authored files (files that do not carry the APM-generated marker) are never overwritten.
+`apm compile --global` is explicit. `apm install -g` does not run it; instead,
+when global instructions land on a root-context-only target, install prints a
+one-line hint pointing at `apm compile -g`. Run it manually after adding or
+removing global packages. Hand-authored files (files that do not carry the
+APM-generated marker) are never overwritten.
 
 ```bash
 apm compile -g

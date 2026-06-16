@@ -110,6 +110,36 @@ def _generate_content(instructions: list[Instruction]) -> str:
     return _finalize_build_id("\n".join(sections))
 
 
+def discover_global_instructions(
+    source_root: Path,
+    *,
+    logger: _logging_module.Logger | None = None,
+) -> list[Instruction]:
+    """Return global (apply_to-less) instructions under ``source_root/apm_modules``.
+
+    Returns an empty list when the ``apm_modules`` tree is absent or carries no
+    global instructions.  Results are sorted by file path for determinism so
+    callers (the compile engine and the install-time hint) agree on ordering.
+    """
+    from ..primitives.discovery import discover_primitives
+
+    log = logger or logging.getLogger(__name__)
+
+    apm_modules = source_root / "apm_modules"
+    if not apm_modules.is_dir():
+        log.debug(
+            "user_root_context: apm_modules dir not found at %s -- no global instructions",
+            apm_modules,
+        )
+        return []
+
+    primitives = discover_primitives(str(apm_modules))
+    return sorted(
+        [instr for instr in primitives.instructions if not instr.apply_to],
+        key=lambda instr: str(instr.file_path),
+    )
+
+
 def compile_user_root_contexts(
     targets: Iterable[TargetProfile],
     source_root: Path,
@@ -147,7 +177,6 @@ def compile_user_root_contexts(
         * ``"skipped-hand-authored"`` -- existing file has no APM marker
         * ``"error:<msg>"``          -- OS error during read or write
     """
-    from ..primitives.discovery import discover_primitives
     from ..utils.path_security import PathTraversalError, ensure_path_within
     from .agents_compiler import _COPILOT_ROOT_GENERATED_MARKER
 
@@ -163,12 +192,7 @@ def compile_user_root_contexts(
         )
         return results
 
-    primitives = discover_primitives(str(apm_modules))
-
-    global_instructions = sorted(
-        [instr for instr in primitives.instructions if not instr.apply_to],
-        key=lambda instr: str(instr.file_path),
-    )
+    global_instructions = discover_global_instructions(source_root, logger=log)
 
     for target in targets:
         # Resolve to user scope; None == target does not support user scope

@@ -267,9 +267,10 @@ be written without modifying files.
 
 ### Constraints
 
-- To integrate global compile into your install flow, use
-  `apm install -g` (see [Install packages](../consumer/install-packages/)), which
-  automatically runs compile after installing global packages.
+- Compilation is explicit. `apm install -g` (see
+  [Install packages](../consumer/install-packages/)) does not write root context
+  files; it prints a one-line hint pointing at `apm compile -g` when global
+  instructions land on a root-context-only target.
 - `--global` cannot be combined with project-output flags such as `--target`,
   `--all`, `--watch`, `--root`, or `--output`.
 - Skills-only packages (no global instructions) do not write root files.

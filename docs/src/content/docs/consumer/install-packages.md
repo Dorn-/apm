@@ -161,12 +161,15 @@ apm install --only apm                 # skip MCP server integration this run
 apm install --frozen                   # CI: lockfile-only; fail on drift
 apm install --refresh                  # bypass the cache; re-fetch everything
 apm install --dev                      # treat positional args as devDependencies
-apm install -g <package>               # install to user scope and compile root files
+apm install -g <package>               # install to user scope (~/.apm/)
 apm install -v                         # verbose: show resolution and integration
 ```
 
-Global installs compile user-scope root files such as `~/.claude/CLAUDE.md`;
-re-run that step with [`apm compile --global`](../../reference/cli/compile/#global-compilation).
+Global instructions are surfaced automatically for directory-native tools
+(Cursor, Windsurf, Kiro, Claude rules). For root-context-only tools (the
+AGENTS.md family, Gemini, top-level `CLAUDE.md`), run
+[`apm compile --global`](../../reference/cli/compile/#global-compilation) to
+write the root context files; `apm install -g` prints a hint when this applies.
 
 For the full flag reference, run `apm install --help` or see
 [CLI commands](../../reference/cli/install/).

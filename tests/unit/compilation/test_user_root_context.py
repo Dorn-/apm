@@ -665,3 +665,47 @@ class TestLoggerUsage:
 
         # Logger should have received debug/info calls
         assert mock_logger.debug.called or mock_logger.info.called
+
+
+# ---------------------------------------------------------------------------
+# test_discover_global_instructions
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverGlobalInstructions:
+    """discover_global_instructions() shared helper behavior."""
+
+    def test_missing_apm_modules_returns_empty(self, tmp_path):
+        """No apm_modules dir -> empty list."""
+        from apm_cli.compilation.user_root_context import discover_global_instructions
+
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+
+        assert discover_global_instructions(source_root) == []
+
+    def test_filters_out_scoped_instructions(self, tmp_path):
+        """Only apply_to-less (global) instructions are returned, sorted by path."""
+        from apm_cli.compilation.user_root_context import discover_global_instructions
+
+        source_root = tmp_path / "source"
+        source_root.mkdir()
+        (source_root / "apm_modules").mkdir()
+
+        global_b = _make_instruction("bbb", apply_to=None, content="B")
+        global_b.file_path = Path("/tmp/bbb.instructions.md")
+        global_a = _make_instruction("aaa", apply_to=None, content="A")
+        global_a.file_path = Path("/tmp/aaa.instructions.md")
+        scoped = _make_instruction("scoped", apply_to="**/*.py", content="S")
+
+        primitives = MagicMock()
+        primitives.instructions = [global_b, scoped, global_a]
+
+        with patch(
+            "apm_cli.primitives.discovery.discover_primitives",
+            return_value=primitives,
+        ):
+            result = discover_global_instructions(source_root)
+
+        # scoped dropped; remaining sorted by file_path (aaa before bbb)
+        assert result == [global_a, global_b]

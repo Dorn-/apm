@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `apm install -g` now makes global instructions immediately available to
-  supported AI tools by compiling user-scope root context files such as
-  `~/.claude/CLAUDE.md`; re-run manually with
-  `apm compile --global`. (#1632)
+- `apm compile --global` / `-g` compiles user-scope root context files such as
+  `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, and `~/.gemini/GEMINI.md` from
+  globally installed instructions. Compilation stays explicit; `apm install -g`
+  prints a one-line hint pointing at `apm compile -g` when global instructions
+  land on a root-context-only target, but writes no root context file. (#1632)
 
 ### Removed
 

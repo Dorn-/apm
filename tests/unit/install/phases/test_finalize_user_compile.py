@@ -1,12 +1,14 @@
-"""Unit tests for finalize.py post-install compile hook.
+"""Unit tests for finalize.py install-time global-instructions hint.
 
-Covers _compile_user_root_contexts_after_install and its integration in run():
+Covers _hint_global_root_context and its integration in run():
 
-* _compile_user_root_contexts_after_install: calls compile_user_root_contexts
-* _compile_user_root_contexts_after_install: logs when files are written
-* run(): does NOT call compile for PROJECT scope
-* run(): DOES call compile for USER scope
-* run(): passes correct source_root to compile
+* hint fires when global instructions land on a root-context-only target
+* hint suppressed when no global instructions were installed
+* hint suppressed when only directory-native targets are active
+* hint suppressed on dry-run
+* hint writes NO file (read-only)
+* run(): does NOT hint for PROJECT scope
+* run(): DOES hint for USER scope
 """
 
 from __future__ import annotations
@@ -20,11 +22,24 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 
 
-def _make_install_context(scope=None, logger=None):
-    """Create a mock InstallContext."""
+def _make_target(name, compile_family, *, user_supported=True):
+    """Create a fake TargetProfile whose for_scope(user_scope=True) returns self.
+
+    When *user_supported* is False, for_scope returns None to model a target
+    that does not support user scope.
+    """
+    profile = SimpleNamespace(name=name, compile_family=compile_family)
+    profile.for_scope = MagicMock(return_value=profile if user_supported else None)
+    return profile
+
+
+def _make_install_context(scope=None, targets=None, dry_run=False):
+    """Create a mock InstallContext for finalize.run()/hint tests."""
     ctx = MagicMock()
     ctx.scope = scope
-    ctx.logger = logger
+    ctx.logger = None
+    ctx.dry_run = dry_run
+    ctx.targets = targets if targets is not None else []
     ctx.total_links_resolved = 0
     ctx.total_commands_integrated = 0
     ctx.total_hooks_integrated = 0
@@ -38,169 +53,198 @@ def _make_install_context(scope=None, logger=None):
 
 
 # ---------------------------------------------------------------------------
-# _compile_user_root_contexts_after_install tests
+# _hint_global_root_context tests
 # ---------------------------------------------------------------------------
 
 
-class TestCompileUserRootContextsAfterInstall:
-    """Tests for _compile_user_root_contexts_after_install()."""
+class TestHintGlobalRootContext:
+    """Tests for _hint_global_root_context()."""
 
-    def test_calls_compile_user_root_contexts(self):
-        """Function calls compile_user_root_contexts with correct arguments."""
+    def test_hint_fires_for_root_context_target(self):
+        """Global instructions + a root-context target -> one hint line."""
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import (
-            _compile_user_root_contexts_after_install,
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("Claude Code", "claude")],
         )
-
-        source_root = Path.home() / ".apm"
-        ctx = _make_install_context(scope=InstallScope.USER)
-
-        mock_compile = MagicMock(return_value=[])
 
         with (
             patch(
                 "apm_cli.core.scope.get_apm_dir",
-                return_value=source_root,
+                return_value=Path.home() / ".apm",
             ),
             patch(
-                "apm_cli.compilation.compile_user_root_contexts",
-                side_effect=mock_compile,
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[SimpleNamespace(apply_to=None)],
             ),
+            patch("apm_cli.utils.console._rich_info") as mock_info,
         ):
-            _compile_user_root_contexts_after_install(ctx)
+            _hint_global_root_context(ctx)
 
-        # Should have called compile_user_root_contexts
-        mock_compile.assert_called_once()
-        call_args = mock_compile.call_args
-        # Check that source_root was passed
-        assert call_args[0][1] == source_root
-        # Check that dry_run=False
-        assert call_args[1]["dry_run"] is False
+        mock_info.assert_called_once()
+        message = mock_info.call_args.args[0]
+        assert "apm compile -g" in message
+        assert "Claude Code" in message
+        assert mock_info.call_args.kwargs.get("symbol") == "info"
 
-    def test_logs_when_files_written(self):
-        """When files are written, logger.verbose_detail is called."""
+    def test_hint_lists_multiple_root_context_targets(self):
+        """All distinct root-context target names are listed once each."""
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import (
-            _compile_user_root_contexts_after_install,
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[
+                _make_target("Codex", "agents"),
+                _make_target("Gemini CLI", "gemini"),
+                # duplicate family/name should be de-duped
+                _make_target("Codex", "agents"),
+            ],
         )
-
-        source_root = Path.home() / ".apm"
-        mock_logger = MagicMock()
-        ctx = _make_install_context(scope=InstallScope.USER, logger=mock_logger)
-
-        # Two written files
-        results = [
-            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="written"),
-            SimpleNamespace(target="vscode", path=Path(".vscode/AGENTS.md"), status="written"),
-        ]
 
         with (
             patch(
                 "apm_cli.core.scope.get_apm_dir",
-                return_value=source_root,
+                return_value=Path.home() / ".apm",
             ),
             patch(
-                "apm_cli.compilation.compile_user_root_contexts",
-                return_value=results,
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[SimpleNamespace(apply_to=None)],
             ),
+            patch("apm_cli.utils.console._rich_info") as mock_info,
         ):
-            _compile_user_root_contexts_after_install(ctx)
+            _hint_global_root_context(ctx)
 
-        # Logger should have been called with a header plus one line per target.
-        assert mock_logger.verbose_detail.call_count == 3
-        call_str = str(mock_logger.verbose_detail.call_args_list)
-        assert "claude" in call_str
-        assert "CLAUDE.md" in call_str
-        assert "vscode" in call_str
+        message = mock_info.call_args.args[0]
+        assert message.count("Codex") == 1
+        assert "Gemini CLI" in message
 
-    def test_no_logging_when_no_files_written(self):
-        """When no files written, logger not called."""
+    def test_no_hint_when_no_global_instructions(self):
+        """No global instructions installed -> no hint."""
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import (
-            _compile_user_root_contexts_after_install,
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("Claude Code", "claude")],
         )
-
-        source_root = Path.home() / ".apm"
-        mock_logger = MagicMock()
-        ctx = _make_install_context(scope=InstallScope.USER, logger=mock_logger)
-
-        # No written files
-        results = [
-            SimpleNamespace(target="claude", path=None, status="skipped-no-instructions"),
-        ]
 
         with (
             patch(
                 "apm_cli.core.scope.get_apm_dir",
-                return_value=source_root,
+                return_value=Path.home() / ".apm",
             ),
             patch(
-                "apm_cli.compilation.compile_user_root_contexts",
-                return_value=results,
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[],
             ),
+            patch("apm_cli.utils.console._rich_info") as mock_info,
         ):
-            _compile_user_root_contexts_after_install(ctx)
+            _hint_global_root_context(ctx)
 
-        # Logger should NOT have been called
-        mock_logger.verbose_detail.assert_not_called()
+        mock_info.assert_not_called()
 
-    def test_no_logging_when_logger_none(self):
-        """When logger is None, no logging occurs."""
+    def test_no_hint_when_only_directory_native_targets(self):
+        """Only directory-native (vscode/copilot) targets active -> no hint."""
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import (
-            _compile_user_root_contexts_after_install,
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("GitHub Copilot", "vscode")],
         )
-
-        source_root = Path.home() / ".apm"
-        ctx = _make_install_context(scope=InstallScope.USER, logger=None)
-
-        # Files written, but logger is None
-        results = [
-            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="written"),
-        ]
 
         with (
             patch(
                 "apm_cli.core.scope.get_apm_dir",
-                return_value=source_root,
+                return_value=Path.home() / ".apm",
             ),
             patch(
-                "apm_cli.compilation.compile_user_root_contexts",
-                return_value=results,
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[SimpleNamespace(apply_to=None)],
             ),
+            patch("apm_cli.utils.console._rich_info") as mock_info,
         ):
-            # Should not raise
-            _compile_user_root_contexts_after_install(ctx)
+            _hint_global_root_context(ctx)
 
-    def test_warns_when_compile_reports_error(self):
-        """Compile errors are surfaced through diagnostics."""
+        mock_info.assert_not_called()
+
+    def test_no_hint_for_targets_without_user_scope(self):
+        """Targets whose for_scope returns None are ignored."""
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import (
-            _compile_user_root_contexts_after_install,
-        )
+        from apm_cli.install.phases.finalize import _hint_global_root_context
 
-        source_root = Path.home() / ".apm"
-        ctx = _make_install_context(scope=InstallScope.USER)
-        results = [
-            SimpleNamespace(target="claude", path=Path(".claude/CLAUDE.md"), status="error:denied"),
-        ]
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("Claude Code", "claude", user_supported=False)],
+        )
 
         with (
             patch(
                 "apm_cli.core.scope.get_apm_dir",
-                return_value=source_root,
+                return_value=Path.home() / ".apm",
             ),
             patch(
-                "apm_cli.compilation.compile_user_root_contexts",
-                return_value=results,
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[SimpleNamespace(apply_to=None)],
             ),
+            patch("apm_cli.utils.console._rich_info") as mock_info,
         ):
-            _compile_user_root_contexts_after_install(ctx)
+            _hint_global_root_context(ctx)
 
-        ctx.diagnostics.warn.assert_called_once()
-        warning = ctx.diagnostics.warn.call_args.args[0]
-        assert "claude" in warning
-        assert "apm compile -g" in warning
+        mock_info.assert_not_called()
+
+    def test_no_hint_on_dry_run(self):
+        """Dry-run installs do not emit the hint and skip discovery entirely."""
+        from apm_cli.core.scope import InstallScope
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("Claude Code", "claude")],
+            dry_run=True,
+        )
+
+        with (
+            patch(
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+            ) as mock_discover,
+            patch("apm_cli.utils.console._rich_info") as mock_info,
+        ):
+            _hint_global_root_context(ctx)
+
+        mock_discover.assert_not_called()
+        mock_info.assert_not_called()
+
+    def test_hint_writes_no_file(self):
+        """The hint never calls compile_user_root_contexts (read-only)."""
+        from apm_cli.core.scope import InstallScope
+        from apm_cli.install.phases.finalize import _hint_global_root_context
+
+        ctx = _make_install_context(
+            scope=InstallScope.USER,
+            targets=[_make_target("Codex", "agents")],
+        )
+
+        with (
+            patch(
+                "apm_cli.core.scope.get_apm_dir",
+                return_value=Path.home() / ".apm",
+            ),
+            patch(
+                "apm_cli.compilation.user_root_context.discover_global_instructions",
+                return_value=[SimpleNamespace(apply_to=None)],
+            ),
+            patch("apm_cli.utils.console._rich_info"),
+            patch(
+                "apm_cli.compilation.user_root_context.compile_user_root_contexts",
+            ) as mock_compile,
+        ):
+            _hint_global_root_context(ctx)
+
+        mock_compile.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -209,63 +253,49 @@ class TestCompileUserRootContextsAfterInstall:
 
 
 class TestFinalizeRunIntegration:
-    """Tests for run() function's integration of compile hook."""
+    """Tests for run() function's integration of the hint hook."""
 
-    def test_project_scope_no_compile(self):
-        """When ctx.scope is PROJECT, compile hook is NOT called."""
+    def test_project_scope_no_hint(self):
+        """When ctx.scope is PROJECT, hint hook is NOT called."""
         from apm_cli.core.scope import InstallScope
         from apm_cli.install.phases.finalize import run
 
         ctx = _make_install_context(scope=InstallScope.PROJECT)
 
-        mock_compile = MagicMock()
-
         with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
-            side_effect=mock_compile,
-        ):
+            "apm_cli.install.phases.finalize._hint_global_root_context",
+        ) as mock_hint:
             run(ctx)
 
-        # Compile hook should NOT have been called
-        mock_compile.assert_not_called()
+        mock_hint.assert_not_called()
 
-    def test_user_scope_compile_called(self):
-        """When ctx.scope is USER, compile hook IS called."""
+    def test_user_scope_hint_called(self):
+        """When ctx.scope is USER, hint hook IS called with the context."""
         from apm_cli.core.scope import InstallScope
         from apm_cli.install.phases.finalize import run
 
-        ctx = _make_install_context(scope=InstallScope.USER, logger=None)
-
-        mock_compile = MagicMock()
+        ctx = _make_install_context(scope=InstallScope.USER)
 
         with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
-            side_effect=mock_compile,
-        ):
+            "apm_cli.install.phases.finalize._hint_global_root_context",
+        ) as mock_hint:
             result = run(ctx)
 
-        # Compile hook SHOULD have been called
-        mock_compile.assert_called_once()
-        mock_compile.assert_called_once_with(ctx)
-        # Result should still be valid
+        mock_hint.assert_called_once_with(ctx)
         assert result is not None
 
-    def test_none_scope_no_compile(self):
-        """When ctx.scope is None, compile hook is NOT called."""
+    def test_none_scope_no_hint(self):
+        """When ctx.scope is None, hint hook is NOT called."""
         from apm_cli.install.phases.finalize import run
 
         ctx = _make_install_context(scope=None)
 
-        mock_compile = MagicMock()
-
         with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
-            side_effect=mock_compile,
-        ):
+            "apm_cli.install.phases.finalize._hint_global_root_context",
+        ) as mock_hint:
             run(ctx)
 
-        # Compile hook should NOT have been called
-        mock_compile.assert_not_called()
+        mock_hint.assert_not_called()
 
     def test_run_returns_install_result(self):
         """run() returns an InstallResult object."""
@@ -273,59 +303,12 @@ class TestFinalizeRunIntegration:
         from apm_cli.install.phases.finalize import run
         from apm_cli.models.results import InstallResult
 
-        ctx = _make_install_context(scope=InstallScope.USER, logger=None)
+        ctx = _make_install_context(scope=InstallScope.USER)
 
         with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
+            "apm_cli.install.phases.finalize._hint_global_root_context",
         ):
             result = run(ctx)
 
-        # Should be an InstallResult
         assert isinstance(result, InstallResult)
         assert result.installed_count == 1
-
-    def test_user_scope_compile_receives_context(self):
-        """compile hook receives the correct context object."""
-        from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import run
-
-        ctx = _make_install_context(scope=InstallScope.USER, logger=None)
-
-        mock_compile = MagicMock()
-
-        with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
-            side_effect=mock_compile,
-        ):
-            run(ctx)
-
-        # Verify the same context object was passed
-        mock_compile.assert_called_once_with(ctx)
-
-    def test_all_stats_collected_before_compile(self):
-        """Stats are collected before compile hook is called."""
-        from apm_cli.core.scope import InstallScope
-        from apm_cli.install.phases.finalize import run
-
-        ctx = _make_install_context(scope=InstallScope.USER, logger=None)
-        ctx.total_links_resolved = 5
-        ctx.total_commands_integrated = 2
-        ctx.total_hooks_integrated = 3
-        ctx.total_instructions_integrated = 1
-
-        compile_called = False
-
-        def mock_compile_fn(call_ctx):
-            nonlocal compile_called
-            compile_called = True
-            # At this point, the context should still have its stats
-            assert call_ctx.total_links_resolved == 5
-            assert call_ctx.total_commands_integrated == 2
-
-        with patch(
-            "apm_cli.install.phases.finalize._compile_user_root_contexts_after_install",
-            side_effect=mock_compile_fn,
-        ):
-            run(ctx)
-
-        assert compile_called
